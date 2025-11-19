@@ -93,6 +93,17 @@ class WhatsAppManager {
     // ✅ UNIFIED MESSAGE HANDLER - Single point of control
     client.on('message', async (message) => {
       try {
+        // ⚡ FIX: IGNORAR MENSAGENS ANTIGAS (mais de 1 minuto)
+        const messageTimestamp = message.timestamp * 1000;
+        const now = Date.now();
+        const messageAge = now - messageTimestamp;
+        const oneMinute = 60 * 1000;
+        
+        if (messageAge > oneMinute) {
+          console.log(`⏭️ [User ${userId}] Ignoring old message (${Math.floor(messageAge / 1000)}s ago)`);
+          return;
+        }
+        
         const chat = await message.getChat();
         if (!chat.isGroup) {
           console.log('⚠️ Message not from a group, skipping...');
