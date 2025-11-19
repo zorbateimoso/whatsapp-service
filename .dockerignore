@@ -1,0 +1,33 @@
+# Node
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Sessões e cache (serão criados no container)
+.wwebjs_auth
+session
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Temporários
+*.tmp
+*.swp
+*.swo
+
+# Documentação
+README.md
+DEPLOY.md
