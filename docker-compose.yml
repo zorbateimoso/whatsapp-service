@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  whatsapp-service:
+    build: .
+    container_name: obra-manager-whatsapp
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    environment:
+      - NODE_ENV=production
+      - PORT=8002
+      - FASTAPI_URL=${FASTAPI_URL:-http://host.docker.internal:8001}
+    volumes:
+      # Persistir sessões do WhatsApp para não perder autenticação
+      - whatsapp-sessions:/app/.wwebjs_auth
+      - chromium-cache:/app/session
+    networks:
+      - obra-manager-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8002/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Recursos limitados (ajuste conforme necessário)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+volumes:
+  whatsapp-sessions:
+    driver: local
+  chromium-cache:
+    driver: local
+
+networks:
+  obra-manager-network:
+    driver: bridge
