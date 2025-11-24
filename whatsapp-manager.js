@@ -6,8 +6,8 @@ const BACKEND_URL = process.env.BACKEND_URL || 'https://obramanager.com.br';
 
 class WhatsAppManager {
   constructor() {
-    this.clients = new Map(); // Map of userId -> client instance
-    this.qrCodes = new Map(); // Map of userId -> QR code
+    this.clients = new Map();
+    this.qrCodes = new Map();
   }
 
   getClient(userId) {
@@ -51,7 +51,7 @@ class WhatsAppManager {
 
     client.on('ready', () => {
       console.log(`✅ WhatsApp ready for user ${userId}`);
-      this.qrCodes.delete(userId); // Remove QR once connected
+      this.qrCodes.delete(userId);
     });
 
     client.on('authenticated', () => {
@@ -67,7 +67,6 @@ class WhatsAppManager {
       console.log(`⚠️ WhatsApp disconnected for user ${userId}:`, reason);
     });
 
-    // ⭐ CORREÇÃO PRINCIPAL: Enviar mensagens no formato correto para o backend
     client.on('message', async (msg) => {
       try {
         console.log(`📩 Message received for user ${userId}:`, {
@@ -76,11 +75,9 @@ class WhatsAppManager {
           hasMedia: msg.hasMedia
         });
 
-        // Obter informações do contato e chat
         const contact = await msg.getContact();
         const chat = await msg.getChat();
         
-        // Determinar o tipo de mensagem
         let messageType = 'text';
         if (msg.hasMedia) {
           if (msg.type === 'image') messageType = 'image';
@@ -88,23 +85,21 @@ class WhatsAppManager {
           else messageType = 'document';
         }
 
-        // ✅ FORMATO CORRETO: Montar webhookData no formato que o backend espera (WhatsAppWebhook model)
         const webhookData = {
-          user_id: userId,  // ID do usuário no sistema
-          group_name: chat.name || contact.pushname || 'WhatsApp',  // Nome do grupo ou contato
-          group_id: msg.from,  // ID completo do grupo/contato
-          sender: msg.author || msg.from,  // Autor da mensagem (em grupos) ou remetente
+          user_id: userId,
+          group_name: chat.name || contact.pushname || 'WhatsApp',
+          group_id: msg.from,
+          sender: msg.author || msg.from,
           sender_name: contact.pushname || 'Usuário',
           timestamp: new Date().toISOString(),
           type: messageType,
           text: msg.body || null
         };
 
-        // Se tem mídia, baixar e enviar no formato correto
         if (msg.hasMedia) {
           try {
             const media = await msg.downloadMedia();
-            webhookData.media = media.data;  // Base64 data
+            webhookData.media = media.data;
             webhookData.media_mime = media.mimetype;
             webhookData.media_filename = media.filename || `file.${media.mimetype.split('/')[1]}`;
             console.log('📎 Media downloaded:', { 
@@ -126,7 +121,6 @@ class WhatsAppManager {
           has_media: !!webhookData.media
         });
 
-        // Enviar para o backend
         const response = await axios.post(
           BACKEND_URL + '/api/whatsapp/webhook',
           webhookData,
@@ -138,7 +132,6 @@ class WhatsAppManager {
 
         console.log('✅ Backend response:', response.data);
 
-        // ⭐ Se o backend retornar "reply_message", enviar ao usuário
         const { reply_message } = response.data;
 
         if (reply_message) {
@@ -151,7 +144,6 @@ class WhatsAppManager {
       } catch (error) {
         console.error('❌ Error processing message:', error.message);
         
-        // Em caso de erro, enviar mensagem genérica
         try {
           await msg.reply('❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.');
         } catch (replyError) {
