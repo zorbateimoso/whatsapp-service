@@ -1,4 +1,4 @@
-/**
+**
  * WHATSAPP MANAGER - VERSÃO SIMPLES (RELAY BURRO)
  * 
  * Esta versão é um "relay burro" - apenas conecta com WhatsApp e encaminha mensagens.
