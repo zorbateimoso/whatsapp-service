@@ -1,33 +1,23 @@
-**
- * WHATSAPP MANAGER - VERSÃO SIMPLES (RELAY BURRO)
- * 
- * Esta versão é um "relay burro" - apenas conecta com WhatsApp e encaminha mensagens.
- * TODA a lógica de decisão fica no backend (Emergent).
- * 
- * VANTAGENS:
- * - Nunca mais precisar atualizar este código
- * - Toda lógica centralizada no backend
- * - Mais fácil de testar e manter
- * - Performance: impacto mínimo
- * 
- * COMO FUNCIONA:
- * 1. Recebe mensagem do WhatsApp
- * 2. Envia para o backend processar
- * 3. Se o backend retornar "reply_message", envia de volta
- * 4. Fim!
- */
-
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
+const qrcode = require('qrcode');
 const axios = require('axios');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'https://obramanager.com.br';
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: [
+class WhatsAppManager {
+  constructor() {
+    this.clients = new Map(); // Map of userId -> client instance
+    this.qrCodes = new Map(); // Map of userId -> QR code
+  }
+
+  getClient(userId) {
+    if (!this.clients.has(userId)) {
+      console.log(`📱 Creating new WhatsApp client for user ${userId}`);
+      const client = new Client({
+        authStrategy: new LocalAuth({ clientId: userId }),
+        puppeteer: {
+          headless: true,
+          args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
@@ -36,37 +26,54 @@ const client = new Client({
             '--no-zygote',
             '--single-process',
             '--disable-gpu'
-        ]
+          ]
+        }
+      });
+
+      this._setupClientHandlers(client, userId);
+      client.initialize();
+      this.clients.set(userId, client);
     }
-});
+    return this.clients.get(userId);
+  }
 
-client.on('qr', (qr) => {
-    console.log('📱 Escaneie o QR Code:');
-    qrcode.generate(qr, { small: true });
-});
+  _setupClientHandlers(client, userId) {
+    client.on('qr', async (qr) => {
+      console.log(`📱 QR Code generated for user ${userId}`);
+      try {
+        const qrImage = await qrcode.toDataURL(qr);
+        this.qrCodes.set(userId, qrImage);
+      } catch (err) {
+        console.error('Error generating QR code image:', err);
+        this.qrCodes.set(userId, qr);
+      }
+    });
 
-client.on('ready', () => {
-    console.log('✅ WhatsApp conectado e pronto!');
-});
+    client.on('ready', () => {
+      console.log(`✅ WhatsApp ready for user ${userId}`);
+      this.qrCodes.delete(userId); // Remove QR once connected
+    });
 
-client.on('authenticated', () => {
-    console.log('✅ WhatsApp autenticado!');
-});
+    client.on('authenticated', () => {
+      console.log(`✅ WhatsApp authenticated for user ${userId}`);
+      this.qrCodes.delete(userId);
+    });
 
-client.on('auth_failure', (msg) => {
-    console.error('❌ Falha na autenticação:', msg);
-});
+    client.on('auth_failure', (msg) => {
+      console.error(`❌ Auth failure for user ${userId}:`, msg);
+    });
 
-client.on('disconnected', (reason) => {
-    console.log('⚠️ WhatsApp desconectado:', reason);
-});
+    client.on('disconnected', (reason) => {
+      console.log(`⚠️ WhatsApp disconnected for user ${userId}:`, reason);
+    });
 
-client.on('message', async (msg) => {
-    try {
-        console.log('📩 Mensagem recebida:', {
-            from: msg.from,
-            body: msg.body,
-            hasMedia: msg.hasMedia
+    // ⭐ CORREÇÃO PRINCIPAL: Enviar mensagens no formato correto para o backend
+    client.on('message', async (msg) => {
+      try {
+        console.log(`📩 Message received for user ${userId}:`, {
+          from: msg.from,
+          body: msg.body,
+          hasMedia: msg.hasMedia
         });
 
         // Obter informações do contato e chat
@@ -76,101 +83,155 @@ client.on('message', async (msg) => {
         // Determinar o tipo de mensagem
         let messageType = 'text';
         if (msg.hasMedia) {
-            if (msg.type === 'image') messageType = 'image';
-            else if (msg.type === 'ptt' || msg.type === 'audio') messageType = 'audio';
-            else messageType = 'document';
+          if (msg.type === 'image') messageType = 'image';
+          else if (msg.type === 'ptt' || msg.type === 'audio') messageType = 'audio';
+          else messageType = 'document';
         }
 
-        // Montar webhookData no formato EXATO que o backend espera (WhatsAppWebhook model)
+        // ✅ FORMATO CORRETO: Montar webhookData no formato que o backend espera (WhatsAppWebhook model)
         const webhookData = {
-            user_id: msg.from.split('@')[0],  // Extrair número sem @c.us
-            group_name: chat.name || contact.pushname || 'WhatsApp',  // Nome do grupo ou contato
-            group_id: msg.from,  // ID completo do grupo/contato
-            sender: msg.author || msg.from,  // Autor da mensagem (em grupos) ou remetente
-            sender_name: contact.pushname || 'Usuário',
-            timestamp: new Date().toISOString(),
-            type: messageType,
-            text: msg.body || null
+          user_id: userId,  // ID do usuário no sistema
+          group_name: chat.name || contact.pushname || 'WhatsApp',  // Nome do grupo ou contato
+          group_id: msg.from,  // ID completo do grupo/contato
+          sender: msg.author || msg.from,  // Autor da mensagem (em grupos) ou remetente
+          sender_name: contact.pushname || 'Usuário',
+          timestamp: new Date().toISOString(),
+          type: messageType,
+          text: msg.body || null
         };
 
         // Se tem mídia, baixar e enviar no formato correto
         if (msg.hasMedia) {
-            try {
-                const media = await msg.downloadMedia();
-                webhookData.media = media.data;  // Base64 data
-                webhookData.media_mime = media.mimetype;
-                webhookData.media_filename = media.filename || `file.${media.mimetype.split('/')[1]}`;
-                console.log('📎 Mídia baixada:', { 
-                    type: webhookData.type, 
-                    mime: webhookData.media_mime, 
-                    size: webhookData.media.length 
-                });
-            } catch (error) {
-                console.error('❌ Erro ao baixar mídia:', error);
-            }
+          try {
+            const media = await msg.downloadMedia();
+            webhookData.media = media.data;  // Base64 data
+            webhookData.media_mime = media.mimetype;
+            webhookData.media_filename = media.filename || `file.${media.mimetype.split('/')[1]}`;
+            console.log('📎 Media downloaded:', { 
+              type: webhookData.type, 
+              mime: webhookData.media_mime, 
+              size: webhookData.media.length 
+            });
+          } catch (error) {
+            console.error('❌ Error downloading media:', error);
+          }
         }
 
-        console.log('📤 Enviando para backend:', BACKEND_URL + '/api/whatsapp/webhook');
-        console.log('📋 Dados:', {
-            user_id: webhookData.user_id,
-            group_name: webhookData.group_name,
-            type: webhookData.type,
-            text: webhookData.text ? webhookData.text.substring(0, 50) : null,
-            has_media: !!webhookData.media
+        console.log('📤 Sending to backend:', BACKEND_URL + '/api/whatsapp/webhook');
+        console.log('📋 Data:', {
+          user_id: webhookData.user_id,
+          group_name: webhookData.group_name,
+          type: webhookData.type,
+          text: webhookData.text ? webhookData.text.substring(0, 50) : null,
+          has_media: !!webhookData.media
         });
 
+        // Enviar para o backend
         const response = await axios.post(
-            BACKEND_URL + '/api/whatsapp/webhook',
-            webhookData,
-            {
-                headers: { 'Content-Type': 'application/json' },
-                timeout: 60000
-            }
+          BACKEND_URL + '/api/whatsapp/webhook',
+          webhookData,
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 60000
+          }
         );
 
-        console.log('✅ Resposta do backend:', response.data);
+        console.log('✅ Backend response:', response.data);
 
-        // ⭐ SIMPLES: Se o backend retornar "reply_message", enviar ao usuário
-        // NÃO tomamos NENHUMA decisão aqui!
+        // ⭐ Se o backend retornar "reply_message", enviar ao usuário
         const { reply_message } = response.data;
 
         if (reply_message) {
-            await msg.reply(reply_message);
-            console.log('📨 Resposta enviada ao usuário');
+          await msg.reply(reply_message);
+          console.log('📨 Reply sent to user');
         } else {
-            console.log('ℹ️ Backend não retornou mensagem para enviar');
+          console.log('ℹ️ Backend did not return a message');
         }
 
-    } catch (error) {
-        console.error('❌ Erro ao processar mensagem:', error.message);
+      } catch (error) {
+        console.error('❌ Error processing message:', error.message);
         
-        // Apenas em caso de erro crítico, enviar mensagem genérica
+        // Em caso de erro, enviar mensagem genérica
         try {
-            await msg.reply('❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.');
+          await msg.reply('❌ Desculpe, ocorreu um erro ao processar sua mensagem. Tente novamente em alguns instantes.');
         } catch (replyError) {
-            console.error('❌ Erro ao enviar mensagem de erro:', replyError);
+          console.error('❌ Error sending error message:', replyError);
         }
-    }
-});
-
-// Inicializar cliente
-console.log('🚀 Iniciando WhatsApp Service...');
-console.log('📡 Backend URL:', BACKEND_URL);
-client.initialize();
-
-// Health check endpoint (para status no Railway)
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-app.get('/health', (req, res) => {
-    const isReady = client.info !== null;
-    res.json({
-        status: isReady ? 'connected' : 'disconnected',
-        timestamp: new Date().toISOString()
+      }
     });
-});
+  }
 
-app.listen(PORT, () => {
-    console.log(`🌐 Health check rodando na porta ${PORT}`);
-});
+  async getStatus(userId) {
+    const client = this.clients.get(userId);
+    if (!client) {
+      return { status: 'not_initialized' };
+    }
+
+    try {
+      const state = await client.getState();
+      return {
+        status: state === 'CONNECTED' ? 'connected' : 'disconnected',
+        state: state
+      };
+    } catch (error) {
+      return { status: 'error', error: error.message };
+    }
+  }
+
+  getQRCode(userId) {
+    return this.qrCodes.get(userId) || null;
+  }
+
+  async getGroups(userId) {
+    const client = this.clients.get(userId);
+    if (!client) {
+      throw new Error('Client not initialized for this user');
+    }
+
+    try {
+      const chats = await client.getChats();
+      const groups = chats
+        .filter(chat => chat.isGroup)
+        .map(chat => ({
+          id: chat.id._serialized,
+          name: chat.name
+        }));
+      
+      return groups;
+    } catch (error) {
+      throw new Error(`Failed to get groups: ${error.message}`);
+    }
+  }
+
+  async logout(userId) {
+    const client = this.clients.get(userId);
+    if (client) {
+      try {
+        await client.logout();
+        await client.destroy();
+        this.clients.delete(userId);
+        this.qrCodes.delete(userId);
+        console.log(`✅ User ${userId} logged out`);
+      } catch (error) {
+        console.error(`❌ Error logging out user ${userId}:`, error);
+        throw error;
+      }
+    }
+  }
+
+  async destroy() {
+    console.log('🛑 Destroying all WhatsApp clients...');
+    for (const [userId, client] of this.clients.entries()) {
+      try {
+        await client.destroy();
+        console.log(`✅ Client for user ${userId} destroyed`);
+      } catch (error) {
+        console.error(`❌ Error destroying client for user ${userId}:`, error);
+      }
+    }
+    this.clients.clear();
+    this.qrCodes.clear();
+  }
+}
+
+module.exports = WhatsAppManager;
