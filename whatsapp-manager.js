@@ -7,6 +7,29 @@ class WhatsAppManager {
     this.clients = new Map(); // userId -> client instance
     this.qrCodes = new Map(); // userId -> qr code
     this.fastApiUrl = process.env.FASTAPI_URL || 'http://localhost:8001';
+    
+    // ✅ NOVO: Padrões de respostas automáticas do bot (para evitar loop)
+    this.BOT_RESPONSE_PATTERNS = [
+      /^✅/,           // Confirmações (ex: "✅ Lançamento registrado")
+      /^📄/,           // Documentos processados
+      /^🖼️/,          // Imagens processadas
+      /^🎤/,           // Áudios processados
+      /^💰.*Consulta/,  // Respostas de consultas financeiras
+      /^📋.*Cadastro/,  // Respostas de cadastro
+      /^⏳/,           // Mensagens de aguarde
+      /^❌/,           // Erros
+      /^ℹ️/,           // Informações
+      /^🔍.*VALIDAÇÃO/, // Mensagens de validação
+      /^⚠️.*CATEGORIA/, // Seleção de categoria
+      /^✏️.*EDIÇÃO/,    // Mensagens de edição manual
+      /^🛑.*Fim/        // Fim de cadastro
+    ];
+  }
+
+  // ✅ NOVO: Verifica se uma mensagem é uma resposta automática do bot
+  isBotResponse(messageText) {
+    if (!messageText || typeof messageText !== 'string') return false;
+    return this.BOT_RESPONSE_PATTERNS.some(pattern => pattern.test(messageText));
   }
 
   // Get or create client for a user
@@ -93,6 +116,18 @@ class WhatsAppManager {
     // ✅ UNIFIED MESSAGE HANDLER - Single point of control
     client.on('message', async (message) => {
       try {
+        // ✅ NOVO: Filtrar mensagens fromMe que são respostas do bot
+        if (message.fromMe) {
+          const messageBody = message.body || '';
+          
+          if (this.isBotResponse(messageBody)) {
+            console.log(`🤖 [User ${userId}] Ignoring bot response: "${messageBody.substring(0, 50)}..."`);
+            return;
+          }
+          
+          console.log(`📱 [User ${userId}] Processing message from authenticated user (fromMe=true)`);
+        }
+        
         // ⚡ FIX: IGNORAR MENSAGENS ANTIGAS (mais de 1 minuto)
         const messageTimestamp = message.timestamp * 1000;
         const now = Date.now();
@@ -114,7 +149,8 @@ class WhatsAppManager {
         const messageText = (message.body || '').trim().toLowerCase();
         
         // PRIORITY 1: Check for category selection responses (Material / Mão de Obra)
-        if (messageText === 'material' || messageText === 'mao de obra' || messageText === 'mão de obra') {
+        // ✅ AGORA USA NLP
+        if (messageText.includes('material') || messageText.includes('mao de obra') || messageText.includes('mão de obra')) {
           console.log(`📊 [User ${userId}] Category response detected: ${messageText}`);
           await this.handleCategoryResponse(message, contact, chat, userId);
           return;
@@ -179,6 +215,15 @@ class WhatsAppManager {
       console.log(`📡 [User ${userId}] Sending message to backend webhook...`);
       const response = await axios.post(`${this.fastApiUrl}/api/whatsapp/webhook`, messageData);
       console.log(`✅ [User ${userId}] Backend response received - Status: ${response.data.status}`);
+      
+      // ✅ NOVO: Handle corrected/create_new status (intelligent correction)
+      if (response.data.status === 'corrected' || response.data.status === 'create_new') {
+        if (response.data.message) {
+          await this.clients.get(userId).sendMessage(chat.id._serialized, response.data.message);
+          console.log(`✅ [User ${userId}] Correction message sent to WhatsApp`);
+        }
+        return;
+      }
       
       // Handle command responses (diary, cadastro, report, query, etc)
       const commandStatuses = [
@@ -275,25 +320,46 @@ class WhatsAppManager {
 
   async handleCategoryResponse(message, contact, chat, userId) {
     try {
-      const messageText = (message.body || '').trim().toLowerCase();
+      const messageText = (message.body || '').trim();
       
+      // ✅ NOVO: Chamar backend para interpretar com GPT (NLP)
+      console.log(`🤖 Interpretando resposta de categoria via GPT: "${messageText}"`);
+      
+      const interpretRes = await axios.post(`${this.fastApiUrl}/api/whatsapp/interpret-category`, {
+        text: messageText
+      });
+      
+      if (interpretRes.data.status !== 'interpreted') {
+        console.log(`⚠️ Não foi possível interpretar: ${messageText}`);
+        await this.clients.get(userId).sendMessage(chat.id._serialized, 
+          '⚠️ Não entendi. Por favor, responda:\n🧱 *Material*\n👷 *Mão de Obra*');
+        return;
+      }
+      
+      const { categoria, info_adicional } = interpretRes.data;
+      console.log(`✅ GPT interpretou - Categoria: ${categoria}, Info adicional: ${info_adicional}`);
+      
+      // Mapear categoria para opção numérica
       let selectedOption;
-      if (messageText === 'material') {
-        selectedOption = '0'; // Material
-      } else if (messageText === 'mao de obra' || messageText === 'mão de obra') {
-        selectedOption = '1'; // Mão de Obra
+      if (categoria === 'Material') {
+        selectedOption = '0';
+      } else if (categoria === 'Mão de obra') {
+        selectedOption = '1';
       } else {
+        console.log(`⚠️ Categoria desconhecida: ${categoria}`);
         return;
       }
 
-      console.log(`✅ Category response: ${messageText.toUpperCase()} by ${contact.pushname || contact.name} (User: ${userId})`);
+      console.log(`✅ Category response: ${categoria} by ${contact.pushname || contact.name} (User: ${userId})`);
 
+      // Enviar para backend com informação adicional
       const categoryResponse = await axios.post(`${this.fastApiUrl}/api/whatsapp/category-selection`, {
         poll_id: 'category_selection',
         voter: contact.id._serialized,
         voter_name: contact.pushname || contact.name || 'Unknown',
         selected_option: selectedOption,
-        group_id: chat.id._serialized
+        group_id: chat.id._serialized,
+        additional_info: info_adicional  // ✅ NOVO: Enviar info adicional
       });
 
       console.log('✅ Category selection sent to backend');
